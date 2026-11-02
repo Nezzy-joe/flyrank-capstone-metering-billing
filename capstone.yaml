@@ -1,0 +1,10 @@
+# Submission manifest the evaluator reads.
+run: docker compose up --build          # boots Postgres + the service
+seed: # TODO Phase 2 — one command to load demo tenants/plans/subscriptions
+test: # optional — TODO: go test ./...
+base_url: http://localhost:8080
+endpoints:
+  - POST /v1/generate
+  - GET  /v1/usage
+  - POST /v1/checkout
+  - POST /webhooks/stripe
