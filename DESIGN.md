@@ -36,12 +36,14 @@ tenants ─┬─< subscriptions >─ plans
 
 - **`tenants`** — one customer organization. All other rows are scoped by `tenant_id`; tenants never see each other's data.
 - **`plans`** — `free` | `pro`, each with `api_call_limit` and `ai_token_limit`. Entitlements only.
-- **`subscriptions`** — links a tenant to a plan, with `status` and the Stripe IDs. This is the row Stripe webhooks update.
+- **`subscriptions`** — links a tenant to a plan, with `status` and the Stripe IDs. This is the row Stripe webhooks update. **Current-subscription model:** exactly one row per tenant (`UNIQUE(tenant_id)`) holding the *present* plan/status regardless of value — it mirrors current state, not history. Every tenant gets a Free, `active` subscription created **transactionally at registration** (application logic), so quota lookup always resolves; `402` is reserved for `canceled`/`past_due`.
 - **`idempotency_keys`** — the request-dedup + response-replay record. **One row per request.**
 - **`usage_events`** — the immutable, append-only billing ledger. **N rows per request** (e.g. one `api_call` + one `ai_tokens`), all referencing the same idempotency record.
 - **`processed_stripe_events`** — webhook dedup; Stripe `event.id` processed at most once.
 
-### Schema (authoritative for Phase 2 migrations)
+### Schema (Phase 1 sketch)
+
+> **Post Phase-2.1 review, the migrations in `migrations/` are the source of truth.** Hardening added there: `UNIQUE(idempotency_key_id, type)` (one event per dimension), a composite FK pinning a usage event's tenant to its idempotency record, `ON DELETE RESTRICT` on the ledger (append-only), `api_call` quantity fixed at 1, a `YYYY-MM` period format CHECK, and a response-consistency CHECK. The sketch below shows the shape; see the SQL for exact constraints.
 
 ```sql
 tenants(
