@@ -1,0 +1,31 @@
+# PostgreSQL for local development. The Go API runs on the host (go run ./cmd/api)
+# and connects via the published 5432 port. A Dockerfile + api service will be
+# added once the foundation is stable (so `docker compose up --build` can boot the
+# whole service, as the capstone requires).
+#
+# Values come from .env (compose auto-loads it); defaults are provided so the file
+# also works without one.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: mb_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-billing}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-billing}
+      POSTGRES_DB: ${POSTGRES_DB:-billing}
+    ports:
+      # Host port is configurable: if 5432 is taken locally, set POSTGRES_HOST_PORT
+      # (and the port in DATABASE_URL) to a free port such as 5434.
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data        # persistent database volume
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-billing} -d ${POSTGRES_DB:-billing}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pgdata:
