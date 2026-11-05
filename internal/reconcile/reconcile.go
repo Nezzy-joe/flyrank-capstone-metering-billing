@@ -26,7 +26,11 @@ type Checker interface {
 	Check(ctx context.Context) ([]Discrepancy, error)
 }
 
-// Alerter is notified when a reconciliation ultimately fails (after retries).
+// Alerter is notified on either alert condition:
+//   - a reconciliation run that ultimately fails after retry exhaustion, or
+//   - an actual counter/ledger discrepancy detected by a successful run.
+//
+// In both cases it receives a describing error.
 type Alerter interface {
 	Alert(ctx context.Context, err error)
 }
