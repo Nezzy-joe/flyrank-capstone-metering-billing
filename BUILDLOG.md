@@ -46,3 +46,36 @@ Honest record of how this was built — including where AI helped, where it was 
 - **Append-only clarification** — documented that `ON DELETE RESTRICT` protects against parent-cascade erasure but not direct `UPDATE`/`DELETE`; the repository/service layer must expose INSERT + read only for `usage_events`.
 
 Re-validated on a fresh disposable Postgres: deferred-trigger success/fail cases, safe seed rollback with a referenced Free plan preserved, and full reversibility of the trigger/function migration. Results in [EVIDENCE.md](EVIDENCE.md); container torn down.
+
+## 2026-11-05 — Phase 2.2: service foundation
+
+**What I did:** Stood up the Go service skeleton — config, database pool, migration runner, health/readiness, graceful shutdown. No billing endpoint, no quota, no Stripe yet.
+
+**Layering (transport → services → repositories → PostgreSQL):**
+- `cmd/api` — composition root: load config → open pool → build server → run → graceful shutdown. Does NOT migrate on startup.
+- `cmd/migrate` — explicit golang-migrate runner (`make migrate-up`), separate from the API.
+- `internal/config` — the only package reading env; typed + validated.
+- `internal/database` — owns the pgx pool (tuning + `Ping` + `Close`); the only package touching the driver.
+- `internal/httpapi` — transport only; `/health` (liveness) and `/ready` (readiness via a narrow `Pinger` interface, **no SQL in the handler**).
+
+**Decisions (mine, from the architecture review):**
+- stdlib `net/http` ServeMux (Go 1.22+ method routing) — no router dependency.
+- Migrations are an explicit step, not run on API boot (workflow: db-up → migrate-up → run → /ready). A one-shot migration container can come later for prod.
+- Compose runs Postgres only; the API runs locally via `go run ./cmd/api`. Dockerfile deferred until the foundation is stable.
+- Made the published Postgres host port configurable (`POSTGRES_HOST_PORT`, default 5432) after hitting a local 5432 conflict — keeps 5432 as the clean-machine default while letting a dev override it.
+
+**Where AI helped:** Claude proposed the package layout and the `Pinger`-interface approach for readiness (keeps SQL out of handlers), wrote the scaffolding from my three decisions, and ran the end-to-end validation. Decisions were mine; I can explain each package's responsibility.
+
+**Where AI was wrong / what I corrected:** (none; the only surprise was the host 5432 port conflict, fixed by making the port configurable.)
+
+**Validation:** `go build`/`go vet`/`go test ./...` green (config + httpapi unit tests; DB test gated). End-to-end on Docker Postgres: explicit migrate to v2, volume persistence across container recreate, connectivity integration test, `/health` 200, `/ready` 200→503(DB down)→200(recovered), graceful shutdown. Results in [EVIDENCE.md](EVIDENCE.md).
+
+**Review refinements (PR #2, 2026-11-05):** six hardening changes before merge.
+1. Strict config — malformed/out-of-range env values are hard errors now (env loader records the first parse error), plus PORT range, pool bounds, and positive-duration checks; tests added.
+2. Safer rollback — a bare `migrate down` refuses; `down N` or explicit `down-all` (with a warning) required. Full rollback is never the default.
+3. `make test-integration` fails fast with a clear message when DATABASE_URL is empty, instead of silently skipping.
+4. `make db-up` health wait is bounded (HEALTH_TIMEOUT, 60s) and dumps container logs + exits non-zero on timeout.
+5. Documented the fail-fast startup policy (DB down at startup → API won't start; DB down later → /ready 503, process stays up).
+6. Consistency — `cmd/migrate` reads the DB URL via `config.DatabaseURL()`, so `internal/config` really is the only package reading env; comment corrected.
+
+One self-inflicted snag during validation (not a code bug): I ran a stale `bin/api` before rebuilding, and the old binary started a server that didn't exit, hanging the script. Killed it (by exact process name, not `-f`, to avoid self-matching), rebuilt, and the new binary fails fast as intended. Validation results in [EVIDENCE.md](EVIDENCE.md).

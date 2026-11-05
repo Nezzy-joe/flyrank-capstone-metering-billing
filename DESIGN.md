@@ -188,6 +188,10 @@ Validation happens at the boundary (bad input → clean `4xx`, never a `500`). S
 
 **Idempotency completeness.** Two layers guard the idempotency record: an immediate `CHECK` (`ck_idem_response_consistency`) rejects *partial* rows at every statement, and a `DEFERRABLE INITIALLY DEFERRED` constraint trigger (`trg_idem_require_complete`) runs at **commit** and rejects an *incomplete* (all-NULL) claim. Together: a record may be NULL-filled only while its transaction is in flight; anything committed must carry `response_status` + `response_body` + `completed_at`.
 
+**Startup & readiness policy (fail-fast).** `database.New` pings PostgreSQL *before* the HTTP server starts listening. The two states are deliberately different:
+- **Database down at initial startup** → the API **does not start**. `database.New` returns an error, `main` exits non-zero. This is fail-fast: a misconfigured or unreachable database surfaces immediately rather than serving a half-working process, and a process manager / one-shot migration-then-start flow sees a clean failure.
+- **Database down *after* startup** → the process **stays up** and `/ready` returns `503` (`/health` stays `200` since the process itself is alive). When the database returns, `/ready` goes back to `200` with no restart. This is what lets an orchestrator route traffic away from an instance during a transient DB outage and back when it recovers.
+
 ---
 
 ## 8. Explicit non-goals (what this does NOT do)

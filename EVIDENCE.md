@@ -148,3 +148,85 @@ R4 ai_tokens row with quantity=1  -> ERROR: new row for relation "usage_events" 
 R5 usage_counters.period='2026-13'-> ERROR: new row for relation "usage_counters" violates check constraint "ck_period_format"
 R7 partial idempotency response   -> ERROR: new row for relation "idempotency_keys" violates check constraint "ck_idem_response_consistency"
 ```
+
+---
+
+## Phase 2.2 — service foundation (2026-11-05)
+
+Go service skeleton: config, pgx pool, explicit migration runner, `/health` + `/ready`, graceful shutdown. No billing endpoint / quota / Stripe yet.
+
+**Build + unit tests:**
+```console
+$ go build ./... && go vet ./...        # OK
+$ go test ./...
+ok  internal/config    0.004s
+ok  internal/database  0.005s   # connectivity test skips without TEST_DATABASE_URL
+ok  internal/httpapi   0.002s   # /health 200, /ready 200 & 503, method routing
+```
+
+**End-to-end against Docker Postgres (host port configurable; used 5434 here):**
+```console
+# explicit migrations (separate step)
+$ go run ./cmd/migrate version    -> none (no migrations applied)
+$ go run ./cmd/migrate up         -> migrate up: done
+$ go run ./cmd/migrate version    -> version: 2 (dirty=false)
+
+# persistent volume: recreate the container, data survives
+$ docker compose down && docker compose up -d
+$ go run ./cmd/migrate version    -> version: 2 (dirty=false)
+
+# DB connectivity integration test
+=== RUN   TestNew_Connectivity
+--- PASS: TestNew_Connectivity (0.01s)
+
+# live endpoints (API via go build -o bin/api ./cmd/api)
+$ curl /health   -> {"status":"ok"}                                   [HTTP 200]
+$ curl /ready    -> {"status":"ready"}                                [HTTP 200]
+$ docker compose stop postgres
+$ curl /ready    -> {"status":"unavailable","reason":"database not reachable"} [HTTP 503]
+$ docker compose start postgres
+$ curl /ready    -> {"status":"ready"}                                [HTTP 200]
+
+# graceful shutdown (SIGTERM)
+listening on :8080 (env=development)
+shutdown signal received
+server stopped cleanly
+```
+
+Satisfies the Phase 2.2 asks: env-based config, pgx pooling, golang-migrate runner, Docker healthcheck + persistent volume, `/health`, `/ready` (real DB check), graceful shutdown, and tests for config + connectivity + health/readiness. No SQL in handlers (readiness goes through the `Pinger` interface).
+
+### Phase 2.2 — review refinements (2026-11-05)
+
+Six hardening changes from PR #2 review. `gofmt`/`go build`/`go vet`/`go test ./...` all green.
+
+**1 · Strict config validation** — malformed/out-of-range values are hard errors (no silent default). Unit tests cover malformed ints, PORT range, pool bounds, non-positive durations. Live fail-fast:
+```console
+$ DATABASE_URL=postgres://x DB_MAX_CONNS=oops ./bin/api
+fatal: config: DB_MAX_CONNS must be an integer, got "oops"      (exit 1)
+$ DATABASE_URL=postgres://x PORT=70000 ./bin/api
+fatal: config: PORT must be between 1 and 65535, got 70000       (exit 1)
+```
+
+**2 · Safer migration rollback** — a bare `down` refuses; a count or the explicit `down-all` is required:
+```console
+$ go run ./cmd/migrate down
+migrate down requires a count, e.g. 'down 1'. To roll back everything use 'down-all'.   (exit 1)
+$ go run ./cmd/migrate down 1     -> migrate down 1: done  (version 1)
+$ go run ./cmd/migrate down-all   -> WARNING: rolling back ALL migrations ... done (version none)
+```
+Makefile: `make migrate-down N=1` (count required) and `make migrate-down-all` (explicit, warns).
+
+**3 · Integration test fails fast without a DB** — no silent skip in the make target:
+```console
+$ make test-integration DATABASE_URL=
+ERROR: DATABASE_URL is empty. Copy .env.example to .env and run 'make db-up' first.   (make Error 1)
+```
+(The gated skip remains only for a plain `go test ./...` unit run.)
+
+**4 · Bounded health wait** — `make db-up` waits up to `HEALTH_TIMEOUT` (60s), then prints `docker compose logs` and exits non-zero. Success path observed: `postgres is healthy`.
+
+**5 · Startup policy documented** — fail-fast: DB down at startup → API does not start; DB down after startup → `/ready` 503, process stays up and recovers. See DESIGN.md "Startup & readiness policy" and the comment in `cmd/api/main.go`.
+
+**6 · Env-access consistency** — `cmd/migrate` now reads the DB URL via `config.DatabaseURL()`, so `internal/config` is genuinely the only package touching `os.Getenv`; the package doc is accurate.
+
+Integration test (`make test-integration`, DB up) still passes; migrations restored to version 2; disposable DB torn down.
