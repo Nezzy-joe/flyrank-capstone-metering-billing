@@ -55,6 +55,9 @@ migrate-down-all:
 migrate-version:
 	go run ./cmd/migrate version
 
+seed:
+	go run ./cmd/seed
+
 run:
 	go run ./cmd/api
 
