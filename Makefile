@@ -21,7 +21,7 @@ HEALTH_TIMEOUT ?= 60
 .PHONY: db-up db-down migrate-up migrate-down migrate-down-all migrate-version run ready health test test-integration psql tidy build
 
 db-up:
-	docker compose up -d
+	docker compose up -d postgres
 	@echo "waiting up to $(HEALTH_TIMEOUT)s for postgres to become healthy..."; \
 	timeout=$(HEALTH_TIMEOUT); \
 	while [ $$timeout -gt 0 ]; do \
@@ -35,6 +35,17 @@ db-up:
 
 db-down:
 	docker compose down
+
+# Full containerized stack (postgres + one-shot migrate + api).
+stack-up:
+	docker compose up --build -d
+
+stack-down:
+	docker compose down
+
+# Seed demo data inside the stack (prints the API key once).
+seed-docker:
+	docker compose run --rm api /app/seed
 
 migrate-up:
 	go run ./cmd/migrate up

@@ -1,10 +1,9 @@
-# PostgreSQL for local development. The Go API runs on the host (go run ./cmd/api)
-# and connects via the published 5432 port. A Dockerfile + api service will be
-# added once the foundation is stable (so `docker compose up --build` can boot the
-# whole service, as the capstone requires).
+# Full stack: `docker compose up --build` boots PostgreSQL, runs migrations as a
+# one-shot service, then starts the API (which waits for both).
 #
-# Values come from .env (compose auto-loads it); defaults are provided so the file
-# also works without one.
+# Inside the compose network the database host is `postgres`; DATABASE_URL_DOCKER
+# therefore points at postgres:5432 (NOT the host's localhost:5434). Values come
+# from .env where present (POSTGRES_* etc.); safe defaults are provided.
 
 services:
   postgres:
@@ -15,8 +14,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-billing}
       POSTGRES_DB: ${POSTGRES_DB:-billing}
     ports:
-      # Host port is configurable: if 5432 is taken locally, set POSTGRES_HOST_PORT
-      # (and the port in DATABASE_URL) to a free port such as 5434.
+      # Host port is configurable; if 5432 is taken set POSTGRES_HOST_PORT (e.g. 5434).
       - "${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data        # persistent database volume
@@ -25,6 +23,40 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
+
+  # One-shot: applies migrations, then exits. The API waits for it to succeed.
+  migrate:
+    build: .
+    image: metering-billing:latest
+    command: ["/app/migrate", "up"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL_DOCKER:-postgres://billing:billing@postgres:5432/billing?sslmode=disable}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build: .
+    image: metering-billing:latest
+    command: ["/app/api"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL_DOCKER:-postgres://billing:billing@postgres:5432/billing?sslmode=disable}
+      PORT: "8080"
+      APP_ENV: ${APP_ENV:-development}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_PRICE_PRO: ${STRIPE_PRICE_PRO:-}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
+      RECONCILE_INTERVAL_SECONDS: ${RECONCILE_INTERVAL_SECONDS:-3600}
+    ports:
+      - "${API_HOST_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
 volumes:
