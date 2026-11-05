@@ -92,6 +92,8 @@ func (r *Reconciler) runOnce(ctx context.Context) {
 			"counter_api_calls", d.CounterAPICalls, "ledger_api_calls", d.LedgerAPICalls,
 			"counter_tokens", d.CounterTokens, "ledger_tokens", d.LedgerTokens)
 	}
+	// A real counter/ledger drift is itself an alert condition — not just query failure.
+	r.alerter.Alert(ctx, fmt.Errorf("reconciliation found %d counter/ledger discrepanc(ies)", len(discs)))
 }
 
 // checkWithRetry retries transient Checker errors with exponential backoff.

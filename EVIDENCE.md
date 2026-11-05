@@ -16,8 +16,9 @@ One pasted proof per Requirements checkbox (Section 6 of the brief) and per acce
 - [x] Pricing constants pinned in config; worked totals shown here.
 
 ## Stripe integration
-- [x] Checkout works end-to-end in test mode.
-- [x] Webhooks verify signatures, ignore duplicate events, update plan/status.
+- [x] Checkout **session-creation logic** proven via a mock-based unit test (`TestCheckoutService_BuildsURLsAndDelegates`).
+- [ ] **Hosted** Checkout end-to-end (real Stripe test Checkout page) — **PENDING external Stripe test credentials** (not yet run).
+- [x] Webhooks verify signatures, ignore duplicate events, update plan/status (locally signed, proven).
 
 ## Data model, tests & documentation
 - [x] tenants, plans, subscriptions, usage_events present; tenant data isolated.
@@ -26,7 +27,7 @@ One pasted proof per Requirements checkbox (Section 6 of the brief) and per acce
 ## Acceptance probes
 - [x] **Probe 1** — same request twice + one key → one usage event; second response mirrors the first.
 - [x] **Probe 2** — tenant driven to exact quota → boundary behaves per rule; next returns 429/402.
-- [x] **Probe 3** — Stripe test Checkout → webhook flips Free → Pro → GET /usage shows new limits.
+- [~] **Probe 3** — PARTIAL. Signed `checkout.session.completed` webhook flips Free → Pro and `GET /usage` shows the new Pro limits (PROVEN). The **hosted Stripe Checkout session** that would precede the webhook is **PENDING live Stripe test credentials** — not marked complete.
 - [x] **Probe 4** — forged webhook → 400, nothing changes; real event replayed twice → processed once.
 - [x] **Probe 5** — pinned pricing → cached-input and reasoning rules produce exact totals; GET /usage matches.
 
@@ -250,7 +251,7 @@ ok  internal/httpapi    ok  internal/money       ok  internal/reconcile  ok  int
 - **httpapi** — /health, /ready (200/503), method routing.
 - **service (race)** — idempotent byte-identical replay, 409 payload mismatch, 402 no-subscription, concurrent-same-key → one event, concurrent-quota → exactly 5 of 30 (no overshoot), sequential boundary, usage reporting, tenant isolation, Pro limits.
 - **billing (race)** — checkout via mock; webhook upgrade, forged→400, duplicate→once, cancel→downgrade, updated→past_due.
-- **reconcile (race)** — retry→alert, transient→recover, success→no-alert, graceful stop, DBChecker mismatch detection.
+- **reconcile (race)** — retry→alert, transient→recover, clean→no-alert, **discrepancy→alert**, graceful stop; DBChecker (FULL OUTER JOIN + keyset pagination) detects **counter-only**, **ledger-only**, and **multi-page** drift.
 - **database** — connectivity integration.
 
 ### The five acceptance probes
@@ -269,10 +270,11 @@ usage 4000/100000 tokens; +96000 (=100000 exact) -> 200 ; +1 (over) -> 429
 concurrency: 30 requests, api limit 5 -> exactly 5 succeed, 25x 429, counter=5 (no overshoot)
 ```
 
-**PROBE 3 — Stripe upgrade** (`TestWebhook_Upgrade_FreeToPro` + `TestUsage_ProLimits`):
+**PROBE 3 — Stripe upgrade** — PARTIAL (`TestWebhook_Upgrade_FreeToPro` + `TestUsage_ProLimits`):
 ```console
-checkout.session.completed (signed) -> subscription plan=pro, status=active
-GET /v1/usage for a Pro tenant -> api limit 10000, token limit 1000000
+checkout.session.completed (signed) -> subscription plan=pro, status=active     [PROVEN]
+GET /v1/usage for a Pro tenant -> api limit 10000, token limit 1000000          [PROVEN]
+hosted Stripe Checkout session creation (POST /v1/checkout)                      [PENDING live test creds]
 ```
 
 **PROBE 4 — webhook safety** (`TestWebhook_ForgedSignature_400_NoChange`, `TestWebhook_DuplicateEvent_ProcessedOnce`):
@@ -308,7 +310,13 @@ API depends on `postgres: service_healthy` AND `migrate: service_completed_succe
 - [x] Idempotency where it matters (metering + webhooks).
 - [x] Secrets clean (env only, never logged; `.env` ignored; SHA-256 key hashes).
 - [x] Cost tracked (per-category, pinned cited rates, integer micro-USD).
-- [x] Metering exactly-once; quotas honest (402/429); cost accurate; Stripe test checkout + verified, deduped webhooks; Docker one-command boot.
+- [x] Metering exactly-once; quotas honest (402/429); cost accurate; Stripe **webhooks** verified+deduped; Docker one-command boot. (Stripe **hosted Checkout** session creation is implemented + mock-tested but **not yet live-verified** — see below.)
 
-### External verification still required
-- Live Stripe **Checkout session creation** (`POST /v1/checkout`) needs real test credentials (`STRIPE_SECRET_KEY`, `STRIPE_PRICE_PRO`). It is implemented against the Stripe Go SDK and covered by a mock-based unit test; to verify end-to-end: set the test keys, `POST /v1/checkout`, complete Checkout with card `4242 4242 4242 4242`, and forward the webhook with `stripe listen --forward-to localhost:8080/webhooks/stripe`. Webhook verification + subscription sync are already proven locally with signed payloads.
+### Stripe verification status (explicit)
+| Capability | Status |
+|---|---|
+| Checkout session-creation logic (mock Gateway) | **PROVEN** — `TestCheckoutService_BuildsURLsAndDelegates` |
+| Webhook signature verification + dedup + subscription sync (locally signed) | **PROVEN** — `internal/billing` webhook tests |
+| Real **hosted** Stripe Checkout + live webhook end-to-end | **PENDING** — needs external Stripe test credentials; not yet run |
+
+To complete the pending item: set `STRIPE_SECRET_KEY` (`sk_test_…`), `STRIPE_PRICE_PRO`, `STRIPE_WEBHOOK_SECRET`; `POST /v1/checkout`; complete Checkout with card `4242 4242 4242 4242`; forward the webhook with `stripe listen --forward-to localhost:8080/webhooks/stripe`. The hosted-Checkout half of Probe 3 is **not** marked complete until this is actually run.

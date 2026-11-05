@@ -118,3 +118,13 @@ Merged PR #2, then built the rest on `feature/complete-billing-engine`.
 - [x] Tests: unit + integration + `-race`; five acceptance probes
 - [x] Docs: README, DESIGN, EVIDENCE, BUILDLOG, capstone.yaml, .env.example
 - [ ] External: live Stripe Checkout end-to-end (needs test account; implemented + mock-tested)
+
+## 2026-11-05 — PR #3 review corrections
+
+**1. Reconciliation strengthened (my fix, from review).** The DBChecker used a LEFT JOIN from counters → ledger, so it missed **ledger-only** drift (ledger rows with no counter row), and its single `LIMIT batchSize` only ever scanned the first page. Rewrote it to:
+- **FULL OUTER JOIN** counters ↔ ledger aggregate, flagging both counter-only and ledger-only mismatches;
+- **keyset pagination** over `(tenant_id, period)` (cursor = last row), so every tenant/period is examined each run with no skip or repeat;
+- **alert on an actual discrepancy**, not only on query failure after retries.
+Kept it strictly read-only on `usage_events`, and preserved bounded retry + backoff and graceful stop. Added tests: counter-only, ledger-only, multi-page (batchSize 2 < 5 discrepancies, each seen exactly once), discrepancy→alert, clean→no-alert, transient→recover, retry-exhaustion→alert.
+
+**2. Stripe evidence corrected.** EVIDENCE.md now distinguishes three cases honestly: (a) Checkout session-creation logic — PROVEN via mock; (b) locally-signed webhook verification + subscription sync — PROVEN; (c) real **hosted** Stripe Checkout + live webhook end-to-end — **PENDING external credentials, not yet run**. Probe 3's hosted-Checkout half is no longer marked complete; the webhook→Pro→usage half remains proven.
