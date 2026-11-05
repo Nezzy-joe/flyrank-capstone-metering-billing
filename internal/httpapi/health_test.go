@@ -16,7 +16,7 @@ type fakePinger struct{ err error }
 func (f fakePinger) Ping(ctx context.Context) error { return f.err }
 
 func handlerWith(p Pinger) http.Handler {
-	return NewServer(&config.Config{Port: "0"}, p).Handler
+	return NewServer(&config.Config{Port: "0"}, Deps{Pinger: p}).Handler
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -47,7 +47,6 @@ func TestReadyEndpoint(t *testing.T) {
 }
 
 func TestMethodRouting(t *testing.T) {
-	// POST /health should not match the GET-only route.
 	rec := httptest.NewRecorder()
 	handlerWith(fakePinger{nil}).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
 	if rec.Code != http.StatusMethodNotAllowed {

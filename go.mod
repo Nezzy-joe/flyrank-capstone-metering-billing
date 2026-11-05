@@ -5,6 +5,7 @@ go 1.25.11
 require (
 	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/jackc/pgx/v5 v5.12.0
+	github.com/stripe/stripe-go/v81 v81.4.0
 )
 
 require (

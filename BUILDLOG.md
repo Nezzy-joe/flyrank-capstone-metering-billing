@@ -79,3 +79,52 @@ Re-validated on a fresh disposable Postgres: deferred-trigger success/fail cases
 6. Consistency — `cmd/migrate` reads the DB URL via `config.DatabaseURL()`, so `internal/config` really is the only package reading env; comment corrected.
 
 One self-inflicted snag during validation (not a code bug): I ran a stale `bin/api` before rebuilding, and the old binary started a server that didn't exit, hanging the script. Killed it (by exact process name, not `-f`, to avoid self-matching), rebuilt, and the new binary fails fast as intended. Validation results in [EVIDENCE.md](EVIDENCE.md).
+
+## 2026-11-05 — Phases 2.3–8: full billing engine
+
+Merged PR #2, then built the rest on `feature/complete-billing-engine`.
+
+**What I built:** API-key auth (SHA-256), idempotent `POST /v1/generate` with atomic quota, `GET /v1/usage`, pinned-rate cost engine, Stripe test-mode checkout + verified/deduped webhooks, a background reconciliation job, and the full Docker stack.
+
+**Key decisions (mine):**
+- **Config overflow fix before merging PR #2** — range-check ints before int32/Duration casts, per review.
+- **Single READ COMMITTED transaction** for metering: claim (`ON CONFLICT DO NOTHING RETURNING`) → atomic guarded counter `UPDATE` → ledger inserts → store response, all commit/rollback together. The unique index is the serialization point; proven no-overshoot under 30 concurrent requests.
+- **Cost model = Gemini 2.5 Flash, Standard tier**, rates verified from the official pricing page (cited in `internal/money/pricing.go`, verified 2026-11-05): input $0.30/1M, cached $0.03/1M, output $2.50/1M, reasoning at output rate. Integer micro-USD, per-category floor. API-call price is 0 (Gemini bills by tokens) — documented, not invented.
+- **Webhooks native-verified via the Stripe Go SDK** (`webhook.ConstructEventWithOptions`), parsed from `Data.Raw` to stay version-stable; dedup on `event.id`.
+- **Reconciliation** detects drift only (never mutates the ledger); bounded retry + backoff + structured alert; graceful stop.
+- **Stripe optional** — nil deps make checkout/webhook endpoints 503; live keys refused (test-mode only).
+
+**Where AI helped:** Claude implemented the layered packages, the metering transaction, the cost engine, the Stripe integration and the reconciliation job from my decisions, wrote the tests, and ran all validation. It fetched and cited the live Gemini rates rather than inventing them. Every design choice was mine and is explained here.
+
+**Where AI was wrong / what I corrected (honest):**
+- **jsonb replay bug:** the idempotency response was stored as `jsonb`, which re-orders keys — replays were semantically but not byte-identical. Caught it in the first live run; added migration `000003` to store `response_body` as `text` for exact replay.
+- **Dockerfile ENTRYPOINT bug:** I first used `ENTRYPOINT ["/app/api"]`, so the compose `command: ["/app/migrate","up"]` became args to the api binary and the "migrate" service actually ran the API (hung the stack). Fixed by switching to `CMD`. A leftover dirty-schema state from that buggy run also caused a one-off migrate exit 1, cleared by `down -v`.
+- Both were caught by actually running the system, not by assuming it worked.
+
+**Validation:** `gofmt`/`build`/`vet`/`test`/`-race` all green; integration tests on disposable Postgres; `docker compose up --build` boots postgres → one-shot migrate → non-root API; all five acceptance probes have evidence. See [EVIDENCE.md](EVIDENCE.md).
+
+**Remaining external step:** live Stripe Checkout session creation needs real test keys (implemented + mock-tested; webhook path fully tested locally).
+
+## Implementation checklist
+
+- [x] Phase 1 — design (merged)
+- [x] Phase 2.1 — migrations: 8 tables, deferred completeness trigger, safe seed rollback (merged)
+- [x] Phase 2.2 — service foundation: config, pgx pool, migrate runner, health/ready, graceful shutdown (merged)
+- [x] Phase 2.3 — auth, idempotent metering, atomic quota, usage reporting
+- [x] Phase 3 — Stripe test-mode checkout + verified/deduped webhooks
+- [x] Phase 4 — cost engine (cited Gemini rates, integer micro-USD)
+- [x] Phase 7 — background reconciliation job (retry + alert)
+- [x] Phase 8 — multi-stage Docker image, one-shot migrate service, one-command boot
+- [x] Tests: unit + integration + `-race`; five acceptance probes
+- [x] Docs: README, DESIGN, EVIDENCE, BUILDLOG, capstone.yaml, .env.example
+- [ ] External: live Stripe Checkout end-to-end (needs test account; implemented + mock-tested)
+
+## 2026-11-05 — PR #3 review corrections
+
+**1. Reconciliation strengthened (my fix, from review).** The DBChecker used a LEFT JOIN from counters → ledger, so it missed **ledger-only** drift (ledger rows with no counter row), and its single `LIMIT batchSize` only ever scanned the first page. Rewrote it to:
+- **FULL OUTER JOIN** counters ↔ ledger aggregate, flagging both counter-only and ledger-only mismatches;
+- **keyset pagination** over `(tenant_id, period)` (cursor = last row), so every tenant/period is examined each run with no skip or repeat;
+- **alert on an actual discrepancy**, not only on query failure after retries.
+Kept it strictly read-only on `usage_events`, and preserved bounded retry + backoff and graceful stop. Added tests: counter-only, ledger-only, multi-page (batchSize 2 < 5 discrepancies, each seen exactly once), discrepancy→alert, clean→no-alert, transient→recover, retry-exhaustion→alert.
+
+**2. Stripe evidence corrected.** EVIDENCE.md now distinguishes three cases honestly: (a) Checkout session-creation logic — PROVEN via mock; (b) locally-signed webhook verification + subscription sync — PROVEN; (c) real **hosted** Stripe Checkout + live webhook end-to-end — **PENDING external credentials, not yet run**. Probe 3's hosted-Checkout half is no longer marked complete; the webhook→Pro→usage half remains proven.

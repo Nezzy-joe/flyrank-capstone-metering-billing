@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -25,7 +26,28 @@ type Config struct {
 
 	// server lifecycle
 	ShutdownTimeout time.Duration
+
+	// Stripe (TEST MODE ONLY). Empty disables the corresponding feature.
+	StripeSecretKey     string
+	StripeWebhookSecret string
+	StripeProPriceID    string
+	PublicBaseURL       string // base URL for Checkout success/cancel redirects
+
+	// Background reconciliation job.
+	ReconcileInterval  time.Duration // 0 disables the job
+	ReconcileBatchSize int
 }
+
+// ReconcileEnabled reports whether the background reconciliation job should run.
+func (c *Config) ReconcileEnabled() bool { return c.ReconcileInterval > 0 }
+
+// StripeCheckoutEnabled reports whether Checkout can be served.
+func (c *Config) StripeCheckoutEnabled() bool {
+	return c.StripeSecretKey != "" && c.StripeProPriceID != ""
+}
+
+// StripeWebhookEnabled reports whether webhooks can be verified.
+func (c *Config) StripeWebhookEnabled() bool { return c.StripeWebhookSecret != "" }
 
 // DatabaseURL reads just the database connection string from the environment.
 // The migration tool needs nothing else, so it calls this instead of loading the
@@ -60,6 +82,8 @@ func Load() (*Config, error) {
 	lifetimeMin := l.intVal("DB_MAX_CONN_LIFETIME_MINUTES", 60)
 	idleMin := l.intVal("DB_MAX_CONN_IDLE_MINUTES", 30)
 	shutdownSec := l.intVal("SHUTDOWN_TIMEOUT_SECONDS", 10)
+	reconcileSec := l.intVal("RECONCILE_INTERVAL_SECONDS", 3600)
+	reconcileBatch := l.intVal("RECONCILE_BATCH_SIZE", 100)
 	if l.err != nil {
 		return nil, l.err
 	}
@@ -86,17 +110,42 @@ func Load() (*Config, error) {
 	if err := checkRange("SHUTDOWN_TIMEOUT_SECONDS", shutdownSec, 1, maxShutdownSecond); err != nil {
 		return nil, err
 	}
+	if err := checkRange("RECONCILE_INTERVAL_SECONDS", reconcileSec, 0, 604800); err != nil { // 0 disables; max 1 week
+		return nil, err
+	}
+	if err := checkRange("RECONCILE_BATCH_SIZE", reconcileBatch, 1, 100000); err != nil {
+		return nil, err
+	}
+
+	stripeSecret := os.Getenv("STRIPE_SECRET_KEY")
+	// Refuse live keys outright — this service is test mode only.
+	if stripeSecret != "" && !strings.HasPrefix(stripeSecret, "sk_test_") {
+		return nil, fmt.Errorf("config: STRIPE_SECRET_KEY must be a test-mode key (sk_test_...)")
+	}
 
 	return &Config{
-		DatabaseURL:       databaseURL,
-		Port:              port,
-		AppEnv:            appEnv,
-		DBMaxConns:        int32(maxConns),
-		DBMinConns:        int32(minConns),
-		DBMaxConnLifetime: time.Duration(lifetimeMin) * time.Minute,
-		DBMaxConnIdleTime: time.Duration(idleMin) * time.Minute,
-		ShutdownTimeout:   time.Duration(shutdownSec) * time.Second,
+		DatabaseURL:         databaseURL,
+		Port:                port,
+		AppEnv:              appEnv,
+		DBMaxConns:          int32(maxConns),
+		DBMinConns:          int32(minConns),
+		DBMaxConnLifetime:   time.Duration(lifetimeMin) * time.Minute,
+		DBMaxConnIdleTime:   time.Duration(idleMin) * time.Minute,
+		ShutdownTimeout:     time.Duration(shutdownSec) * time.Second,
+		StripeSecretKey:     stripeSecret,
+		StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"),
+		StripeProPriceID:    os.Getenv("STRIPE_PRICE_PRO"),
+		PublicBaseURL:       getenvDefault("PUBLIC_BASE_URL", "http://localhost:8080"),
+		ReconcileInterval:   time.Duration(reconcileSec) * time.Second,
+		ReconcileBatchSize:  reconcileBatch,
 	}, nil
+}
+
+func getenvDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
 
 func checkPort(port string) error {

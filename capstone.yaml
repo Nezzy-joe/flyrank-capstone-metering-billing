@@ -1,9 +1,7 @@
 # Submission manifest the evaluator reads.
-# run becomes one-command once the API is containerized; for now the dev workflow is:
-#   make db-up && make migrate-up && make run   (see README)
-run: docker compose up --build          # boots Postgres today; + API service after Dockerfile lands
-seed: # TODO — one command to load demo tenants/plans/subscriptions
-test: go test ./...
+run: docker compose up --build                 # postgres -> one-shot migrate -> api
+seed: docker compose run --rm api /app/seed    # prints a demo tenant + API key (once)
+test: go test ./...                            # unit; `make test-integration` adds DB tests
 base_url: http://localhost:8080
 endpoints:
   - GET  /health
