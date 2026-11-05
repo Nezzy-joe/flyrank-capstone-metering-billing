@@ -1,9 +1,13 @@
 # Submission manifest the evaluator reads.
-run: docker compose up --build          # boots Postgres + the service
-seed: # TODO Phase 2 — one command to load demo tenants/plans/subscriptions
-test: # optional — TODO: go test ./...
+# run becomes one-command once the API is containerized; for now the dev workflow is:
+#   make db-up && make migrate-up && make run   (see README)
+run: docker compose up --build          # boots Postgres today; + API service after Dockerfile lands
+seed: # TODO — one command to load demo tenants/plans/subscriptions
+test: go test ./...
 base_url: http://localhost:8080
 endpoints:
+  - GET  /health
+  - GET  /ready
   - POST /v1/generate
   - GET  /v1/usage
   - POST /v1/checkout

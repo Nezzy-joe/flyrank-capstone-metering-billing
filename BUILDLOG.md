@@ -46,3 +46,26 @@ Honest record of how this was built — including where AI helped, where it was 
 - **Append-only clarification** — documented that `ON DELETE RESTRICT` protects against parent-cascade erasure but not direct `UPDATE`/`DELETE`; the repository/service layer must expose INSERT + read only for `usage_events`.
 
 Re-validated on a fresh disposable Postgres: deferred-trigger success/fail cases, safe seed rollback with a referenced Free plan preserved, and full reversibility of the trigger/function migration. Results in [EVIDENCE.md](EVIDENCE.md); container torn down.
+
+## 2026-11-05 — Phase 2.2: service foundation
+
+**What I did:** Stood up the Go service skeleton — config, database pool, migration runner, health/readiness, graceful shutdown. No billing endpoint, no quota, no Stripe yet.
+
+**Layering (transport → services → repositories → PostgreSQL):**
+- `cmd/api` — composition root: load config → open pool → build server → run → graceful shutdown. Does NOT migrate on startup.
+- `cmd/migrate` — explicit golang-migrate runner (`make migrate-up`), separate from the API.
+- `internal/config` — the only package reading env; typed + validated.
+- `internal/database` — owns the pgx pool (tuning + `Ping` + `Close`); the only package touching the driver.
+- `internal/httpapi` — transport only; `/health` (liveness) and `/ready` (readiness via a narrow `Pinger` interface, **no SQL in the handler**).
+
+**Decisions (mine, from the architecture review):**
+- stdlib `net/http` ServeMux (Go 1.22+ method routing) — no router dependency.
+- Migrations are an explicit step, not run on API boot (workflow: db-up → migrate-up → run → /ready). A one-shot migration container can come later for prod.
+- Compose runs Postgres only; the API runs locally via `go run ./cmd/api`. Dockerfile deferred until the foundation is stable.
+- Made the published Postgres host port configurable (`POSTGRES_HOST_PORT`, default 5432) after hitting a local 5432 conflict — keeps 5432 as the clean-machine default while letting a dev override it.
+
+**Where AI helped:** Claude proposed the package layout and the `Pinger`-interface approach for readiness (keeps SQL out of handlers), wrote the scaffolding from my three decisions, and ran the end-to-end validation. Decisions were mine; I can explain each package's responsibility.
+
+**Where AI was wrong / what I corrected:** (none; the only surprise was the host 5432 port conflict, fixed by making the port configurable.)
+
+**Validation:** `go build`/`go vet`/`go test ./...` green (config + httpapi unit tests; DB test gated). End-to-end on Docker Postgres: explicit migrate to v2, volume persistence across container recreate, connectivity integration test, `/health` 200, `/ready` 200→503(DB down)→200(recovered), graceful shutdown. Results in [EVIDENCE.md](EVIDENCE.md).

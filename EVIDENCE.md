@@ -148,3 +148,49 @@ R4 ai_tokens row with quantity=1  -> ERROR: new row for relation "usage_events" 
 R5 usage_counters.period='2026-13'-> ERROR: new row for relation "usage_counters" violates check constraint "ck_period_format"
 R7 partial idempotency response   -> ERROR: new row for relation "idempotency_keys" violates check constraint "ck_idem_response_consistency"
 ```
+
+---
+
+## Phase 2.2 — service foundation (2026-11-05)
+
+Go service skeleton: config, pgx pool, explicit migration runner, `/health` + `/ready`, graceful shutdown. No billing endpoint / quota / Stripe yet.
+
+**Build + unit tests:**
+```console
+$ go build ./... && go vet ./...        # OK
+$ go test ./...
+ok  internal/config    0.004s
+ok  internal/database  0.005s   # connectivity test skips without TEST_DATABASE_URL
+ok  internal/httpapi   0.002s   # /health 200, /ready 200 & 503, method routing
+```
+
+**End-to-end against Docker Postgres (host port configurable; used 5434 here):**
+```console
+# explicit migrations (separate step)
+$ go run ./cmd/migrate version    -> none (no migrations applied)
+$ go run ./cmd/migrate up         -> migrate up: done
+$ go run ./cmd/migrate version    -> version: 2 (dirty=false)
+
+# persistent volume: recreate the container, data survives
+$ docker compose down && docker compose up -d
+$ go run ./cmd/migrate version    -> version: 2 (dirty=false)
+
+# DB connectivity integration test
+=== RUN   TestNew_Connectivity
+--- PASS: TestNew_Connectivity (0.01s)
+
+# live endpoints (API via go build -o bin/api ./cmd/api)
+$ curl /health   -> {"status":"ok"}                                   [HTTP 200]
+$ curl /ready    -> {"status":"ready"}                                [HTTP 200]
+$ docker compose stop postgres
+$ curl /ready    -> {"status":"unavailable","reason":"database not reachable"} [HTTP 503]
+$ docker compose start postgres
+$ curl /ready    -> {"status":"ready"}                                [HTTP 200]
+
+# graceful shutdown (SIGTERM)
+listening on :8080 (env=development)
+shutdown signal received
+server stopped cleanly
+```
+
+Satisfies the Phase 2.2 asks: env-based config, pgx pooling, golang-migrate runner, Docker healthcheck + persistent volume, `/health`, `/ready` (real DB check), graceful shutdown, and tests for config + connectivity + health/readiness. No SQL in handlers (readiness goes through the `Pinger` interface).
