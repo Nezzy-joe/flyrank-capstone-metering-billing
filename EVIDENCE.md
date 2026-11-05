@@ -86,3 +86,65 @@ Re-validated against a fresh disposable PostgreSQL 16 container via golang-migra
 **Reversibility with the new objects.** `down -all` → trigger function count 0, only `schema_migrations` remains; `up` → function recreated, version 2.
 
 **Append-only clarification (docs).** `ON DELETE RESTRICT` blocks parent-cascade erasure but not direct `UPDATE`/`DELETE` of `usage_events`; the repository/service layer must expose only INSERT + read paths. Documented in `DESIGN.md` and in the migration comment. (DB-role `REVOKE` noted as optional Phase-4 hardening.)
+
+#### Command / output excerpts
+
+Engine: PostgreSQL 16 in a disposable Docker container; migrations run with the official `migrate/migrate` image.
+
+`migrate up` and the deferred trigger present and marked deferrable:
+
+```console
+$ migrate -path=/migrations -database "$DBURL" up
+1/u core_schema (407ms)
+2/u seed_plans (443ms)
+
+$ psql -c "SELECT tgname,tgdeferrable,tginitdeferred FROM pg_trigger WHERE tgname='trg_idem_require_complete';"
+          tgname           | tgdeferrable | tginitdeferred
+---------------------------+--------------+----------------
+ trg_idem_require_complete | t            | t
+```
+
+Deferred completeness — **Test B** (claim only, then COMMIT without completing): the NULL claim is visible inside the txn, the COMMIT is rejected, and the row rolls back to 0:
+
+```console
+BEGIN
+INSERT 0 1
+                    note                    | count
+--------------------------------------------+-------
+ mid-txn row exists (NULL response allowed) |     1
+ERROR:  idempotency_keys b2222222-0000-0000-0000-000000000002: response incomplete at commit (store response_status+response_body+completed_at before COMMIT)
+CONTEXT:  PL/pgSQL function idem_require_complete_at_commit() line 10 at RAISE
+           note           | count
+--------------------------+-------
+ rows after failed commit |     0
+```
+
+Safe seed rollback — Free referenced by a subscription is preserved, unreferenced Pro is removed; reapply restores both:
+
+```console
+$ migrate down 1
+2/d seed_plans (40ms)
+$ psql -c "SELECT id,api_call_limit,ai_token_limit FROM plans ORDER BY id;"
+  id  | api_call_limit | ai_token_limit
+------+----------------+----------------
+ free |           1000 |         100000      -- referenced -> preserved (pro deleted)
+
+$ migrate up            # reapply the seed
+2/u seed_plans (33ms)
+$ psql -c "SELECT id,api_call_limit,ai_token_limit FROM plans ORDER BY id;"
+  id  | api_call_limit | ai_token_limit
+------+----------------+----------------
+ free |           1000 |         100000
+ pro  |          10000 |        1000000
+```
+
+Constraint negative tests (round 1) — each violation rejected by the intended constraint:
+
+```console
+R1 2nd api_call for same request  -> ERROR: duplicate key value violates unique constraint "uq_usage_request_dimension"
+R2 event for tenant B on A's idem -> ERROR: insert or update on table "usage_events" violates foreign key constraint "fk_usage_idem"
+R3 delete tenant that has events  -> ERROR: update or delete on table "tenants" violates foreign key constraint "fk_usage_tenant" on table "usage_events"
+R4 ai_tokens row with quantity=1  -> ERROR: new row for relation "usage_events" violates check constraint "ck_usage_dimension"
+R5 usage_counters.period='2026-13'-> ERROR: new row for relation "usage_counters" violates check constraint "ck_period_format"
+R7 partial idempotency response   -> ERROR: new row for relation "idempotency_keys" violates check constraint "ck_idem_response_consistency"
+```
