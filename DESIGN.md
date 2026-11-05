@@ -204,3 +204,27 @@ Validation happens at the boundary (bad input → clean `4xx`, never a `500`). S
 6. **No UI** — this is a backend service only.
 
 > Primary explicit non-goal for the Phase 1 gate: **no invoicing, proration, or overage billing in the core.**
+
+---
+
+## 9. Implementation map (final)
+
+```
+cmd/api       composition root: config → pool → services → server → graceful shutdown (+ reconcile job)
+cmd/migrate   explicit golang-migrate runner (up / down N / down-all / version)
+cmd/seed      idempotent demo tenant + Free subscription + one-time API key
+
+internal/config      typed, validated, env-only config (+ Stripe test-mode guard, overflow bounds)
+internal/database    pgxpool (tuning, Ping, Close)
+internal/apikey      crypto-random keys, SHA-256 hashing
+internal/repository   ALL SQL behind a Querier (pool or tx)
+internal/money       cost engine — pinned Gemini 2.5 Flash rates, integer micro-USD
+internal/service     AuthService, MeterService (the metering transaction), UsageService
+internal/billing     Stripe Gateway (checkout) + WebhookService (verify/dedup/sync)
+internal/reconcile   background counter↔ledger reconciliation (retry + alert)
+internal/httpapi     transport: auth middleware, handlers, error mapping (no SQL)
+```
+
+**Cost rates (pinned in `internal/money/pricing.go`):** Gemini 2.5 Flash, Standard tier — input $0.30/1M, cached input $0.03/1M, output $2.50/1M, reasoning at the output rate. Source: aistudio.google.com/docs/pricing, verified 2026-11-05. Cost is integer micro-USD with per-category floor; the API-call price is 0 (Gemini bills by tokens).
+
+**Migrations:** `000001` core schema (8 tables + deferred completeness trigger), `000002` Free/Pro reference data, `000003` idempotency `response_body` → `text` (byte-identical replay).
