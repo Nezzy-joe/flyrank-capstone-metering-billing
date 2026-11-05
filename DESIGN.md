@@ -1,7 +1,7 @@
 # Design — Usage Metering & Billing Engine
 
 **Status:** Phase 1 (Design) · **Stack:** Go · PostgreSQL · Docker Compose · Stripe (test mode)
-**Author:** Joseph Amos Ekpe
+**Author:** Joseph Amos Ekpe — sole project author (GitHub: `Nezzy-joe`)
 
 ---
 

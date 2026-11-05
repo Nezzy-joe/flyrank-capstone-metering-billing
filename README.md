@@ -4,6 +4,8 @@ A backend service that answers the three questions every SaaS must: **how much h
 
 **Stack:** Go · PostgreSQL (pgx) · Docker Compose · Stripe test mode · golang-migrate
 
+**Author:** Joseph Amos Ekpe — sole project author ([`Nezzy-joe`](https://github.com/Nezzy-joe)). AI tools assisted development under the author's direction; see [BUILDLOG.md](BUILDLOG.md) for an honest disclosure. AI assistance is not project co-authorship.
+
 > **Language note:** the FlyRank brief suggests JavaScript or Python; this project is built in **Go** by deliberate choice (strongest language; Stripe has an official Go SDK; the acceptance probes are HTTP-level and language-agnostic). This deviation is documented here, in `DESIGN.md`, and in `BUILDLOG.md`. It has **not** been approved by FlyRank — it is an owned engineering decision.
 
 ## Features
