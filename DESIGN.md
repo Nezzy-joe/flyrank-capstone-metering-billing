@@ -184,6 +184,10 @@ PostgreSQL
 
 Validation happens at the boundary (bad input → clean `4xx`, never a `500`). Services hold the correctness rules and own the transaction boundary. Repositories are the only layer that touches SQL.
 
+**Append-only ledger — scope of the DB guarantee.** `usage_events` carries `ON DELETE RESTRICT` on its foreign keys, which blocks *parent* deletion (a tenant or idempotency record) from erasing historical usage. This does **not** stop a direct `UPDATE` or `DELETE` of `usage_events` rows — SQL still permits those. True append-only is therefore a **two-layer** guarantee: the database prevents parent-cascade erasure, and the **repository/service layer must expose only `INSERT` + read paths for `usage_events` (no update, no delete)**. A dedicated DB role with `REVOKE UPDATE, DELETE ON usage_events` is noted as optional Phase-4 hardening.
+
+**Idempotency completeness.** Two layers guard the idempotency record: an immediate `CHECK` (`ck_idem_response_consistency`) rejects *partial* rows at every statement, and a `DEFERRABLE INITIALLY DEFERRED` constraint trigger (`trg_idem_require_complete`) runs at **commit** and rejects an *incomplete* (all-NULL) claim. Together: a record may be NULL-filled only while its transaction is in flight; anything committed must carry `response_status` + `response_body` + `completed_at`.
+
 ---
 
 ## 8. Explicit non-goals (what this does NOT do)

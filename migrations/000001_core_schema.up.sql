@@ -77,11 +77,47 @@ CREATE TABLE idempotency_keys (
     )
 );
 
+-- Commit-time completeness guard for idempotency records.
+-- The immediate CHECK above forbids PARTIAL rows at every statement, but still permits an
+-- all-NULL claim row to be COMMITTED incomplete. This DEFERRABLE INITIALLY DEFERRED
+-- constraint trigger runs at COMMIT and requires the response to be fully populated, so:
+--   * mid-transaction the claim may be NULL-filled (claim-first works), but
+--   * a transaction that claims a key and commits WITHOUT storing its response FAILS.
+-- The function re-reads the current row by PK (not the trigger's NEW image) so it always
+-- judges the final committed state, even when fired for the earlier INSERT event.
+CREATE OR REPLACE FUNCTION idem_require_complete_at_commit() RETURNS trigger AS $$
+DECLARE
+    rec idempotency_keys%ROWTYPE;
+BEGIN
+    SELECT * INTO rec FROM idempotency_keys WHERE id = NEW.id;
+    IF NOT FOUND THEN
+        RETURN NULL;   -- row deleted within the same txn; nothing to commit
+    END IF;
+    IF rec.response_status IS NULL OR rec.response_body IS NULL OR rec.completed_at IS NULL THEN
+        RAISE EXCEPTION
+            'idempotency_keys %: response incomplete at commit (store response_status+response_body+completed_at before COMMIT)',
+            rec.id
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE CONSTRAINT TRIGGER trg_idem_require_complete
+    AFTER INSERT OR UPDATE ON idempotency_keys
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW
+    EXECUTE FUNCTION idem_require_complete_at_commit();
+
 -- 6. usage_events (immutable, append-only billing ledger; N rows per request)
 -- Tenant isolation is STRUCTURAL: the composite FK forces a usage event's tenant_id to
 -- equal the tenant_id of its idempotency record — a row cannot be attributed to the wrong
 -- tenant. ON DELETE RESTRICT on both FKs protects history: deleting a tenant or an
 -- idempotency record is blocked while usage events reference it (the ledger is append-only).
+-- NOTE: ON DELETE RESTRICT only blocks PARENT deletion from reaching this table. It does NOT
+-- prevent a direct UPDATE or DELETE of usage_events rows. True append-only is additionally
+-- enforced by the repository/service layer, which exposes only INSERT + read paths for this
+-- table (no update, no delete). See DESIGN.md.
 CREATE TABLE usage_events (
     id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id           uuid NOT NULL,
