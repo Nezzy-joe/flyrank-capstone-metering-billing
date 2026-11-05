@@ -61,3 +61,28 @@ Validated against a disposable **PostgreSQL 16.15** container, migrations applie
 **Reversibility:** `migrate down -all` dropped all app tables (only `schema_migrations` remained); `migrate up` rebuilt all 8 and reseeded plans deterministically → version `2`.
 
 > Deferred to Phase 2.2 (not started here): Go unit tests for the response-integrity invariant, and the behavioral probes (duplicate→one event, concurrent→no overshoot) which need the repository + handler layer.
+
+### Phase 2.1 — final review hardening (2026-11-05)
+
+Re-validated against a fresh disposable PostgreSQL 16 container via golang-migrate after three review refinements.
+
+**Commit-time idempotency completeness (deferred constraint trigger).** Added `trg_idem_require_complete` (`DEFERRABLE INITIALLY DEFERRED`, confirmed `tgdeferrable=t, tginitdeferred=t`) backed by `idem_require_complete_at_commit()`, which re-reads the row by PK and requires `response_status + response_body + completed_at` at commit.
+
+| Test | Expected | Result |
+|---|---|---|
+| Claim → store response → `COMMIT` | success | ✅ committed, row fully populated |
+| Claim only → `COMMIT` without completing | fail at commit | ✅ rejected: *"response incomplete at commit"*; row count after = 0 (rolled back) |
+| Mid-transaction NULL claim visible before commit | allowed | ✅ row present with NULL response inside the txn |
+| Partial row (status set, body/completed_at NULL) at statement time | fail immediately | ✅ rejected by `ck_idem_response_consistency` |
+
+**Safe seed rollback preserving referenced plans.** `000002_seed_plans.down.sql` now deletes a seeded plan only when no subscription references it.
+
+| Step | Result |
+|---|---|
+| `up` (v2), insert tenant + subscription on Free | ok |
+| `down 1` (roll back seed only) | version → **1**; Free **preserved** (referenced), Pro deleted |
+| `up` (reapply seed) | version → **2**; Free 1000/100000 and Pro 10000/1000000 both correct; subscription intact |
+
+**Reversibility with the new objects.** `down -all` → trigger function count 0, only `schema_migrations` remains; `up` → function recreated, version 2.
+
+**Append-only clarification (docs).** `ON DELETE RESTRICT` blocks parent-cascade erasure but not direct `UPDATE`/`DELETE` of `usage_events`; the repository/service layer must expose only INSERT + read paths. Documented in `DESIGN.md` and in the migration comment. (DB-role `REVOKE` noted as optional Phase-4 hardening.)
