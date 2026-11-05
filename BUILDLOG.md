@@ -69,3 +69,13 @@ Re-validated on a fresh disposable Postgres: deferred-trigger success/fail cases
 **Where AI was wrong / what I corrected:** (none; the only surprise was the host 5432 port conflict, fixed by making the port configurable.)
 
 **Validation:** `go build`/`go vet`/`go test ./...` green (config + httpapi unit tests; DB test gated). End-to-end on Docker Postgres: explicit migrate to v2, volume persistence across container recreate, connectivity integration test, `/health` 200, `/ready` 200→503(DB down)→200(recovered), graceful shutdown. Results in [EVIDENCE.md](EVIDENCE.md).
+
+**Review refinements (PR #2, 2026-11-05):** six hardening changes before merge.
+1. Strict config — malformed/out-of-range env values are hard errors now (env loader records the first parse error), plus PORT range, pool bounds, and positive-duration checks; tests added.
+2. Safer rollback — a bare `migrate down` refuses; `down N` or explicit `down-all` (with a warning) required. Full rollback is never the default.
+3. `make test-integration` fails fast with a clear message when DATABASE_URL is empty, instead of silently skipping.
+4. `make db-up` health wait is bounded (HEALTH_TIMEOUT, 60s) and dumps container logs + exits non-zero on timeout.
+5. Documented the fail-fast startup policy (DB down at startup → API won't start; DB down later → /ready 503, process stays up).
+6. Consistency — `cmd/migrate` reads the DB URL via `config.DatabaseURL()`, so `internal/config` really is the only package reading env; comment corrected.
+
+One self-inflicted snag during validation (not a code bug): I ran a stale `bin/api` before rebuilding, and the old binary started a server that didn't exit, hanging the script. Killed it (by exact process name, not `-f`, to avoid self-matching), rebuilt, and the new binary fails fast as intended. Validation results in [EVIDENCE.md](EVIDENCE.md).

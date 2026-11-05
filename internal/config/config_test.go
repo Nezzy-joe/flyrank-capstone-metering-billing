@@ -2,14 +2,7 @@ package config
 
 import "testing"
 
-func TestLoad(t *testing.T) {
-	t.Run("missing DATABASE_URL is rejected", func(t *testing.T) {
-		t.Setenv("DATABASE_URL", "")
-		if _, err := Load(); err == nil {
-			t.Fatal("expected error for missing DATABASE_URL, got nil")
-		}
-	})
-
+func TestLoad_Valid(t *testing.T) {
 	t.Run("defaults applied when optionals unset", func(t *testing.T) {
 		t.Setenv("DATABASE_URL", "postgres://u:p@localhost:5432/db?sslmode=disable")
 		t.Setenv("PORT", "")
@@ -43,13 +36,51 @@ func TestLoad(t *testing.T) {
 			t.Errorf("overrides not applied: %+v", cfg)
 		}
 	})
+}
 
-	t.Run("invalid pool bounds rejected", func(t *testing.T) {
+// TestLoad_Invalid covers malformed and out-of-range configuration. Each case
+// must produce an error rather than a silently-defaulted value.
+func TestLoad_Invalid(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+	}{
+		{"missing DATABASE_URL", map[string]string{"DATABASE_URL": ""}},
+		{"malformed DB_MAX_CONNS", map[string]string{"DATABASE_URL": "postgres://x", "DB_MAX_CONNS": "not-a-number"}},
+		{"malformed PORT", map[string]string{"DATABASE_URL": "postgres://x", "PORT": "abc"}},
+		{"PORT below range", map[string]string{"DATABASE_URL": "postgres://x", "PORT": "0"}},
+		{"PORT above range", map[string]string{"DATABASE_URL": "postgres://x", "PORT": "70000"}},
+		{"DB_MAX_CONNS not positive", map[string]string{"DATABASE_URL": "postgres://x", "DB_MAX_CONNS": "0"}},
+		{"DB_MIN_CONNS negative", map[string]string{"DATABASE_URL": "postgres://x", "DB_MIN_CONNS": "-1"}},
+		{"DB_MIN_CONNS exceeds max", map[string]string{"DATABASE_URL": "postgres://x", "DB_MAX_CONNS": "5", "DB_MIN_CONNS": "9"}},
+		{"non-positive lifetime", map[string]string{"DATABASE_URL": "postgres://x", "DB_MAX_CONN_LIFETIME_MINUTES": "0"}},
+		{"non-positive idle", map[string]string{"DATABASE_URL": "postgres://x", "DB_MAX_CONN_IDLE_MINUTES": "0"}},
+		{"non-positive shutdown", map[string]string{"DATABASE_URL": "postgres://x", "SHUTDOWN_TIMEOUT_SECONDS": "0"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			for k, v := range c.env {
+				t.Setenv(k, v)
+			}
+			if _, err := Load(); err == nil {
+				t.Fatalf("expected error for %s, got nil", c.name)
+			}
+		})
+	}
+}
+
+func TestDatabaseURL(t *testing.T) {
+	t.Run("present", func(t *testing.T) {
 		t.Setenv("DATABASE_URL", "postgres://x")
-		t.Setenv("DB_MAX_CONNS", "5")
-		t.Setenv("DB_MIN_CONNS", "9")
-		if _, err := Load(); err == nil {
-			t.Fatal("expected error for DB_MIN_CONNS > DB_MAX_CONNS")
+		got, err := DatabaseURL()
+		if err != nil || got != "postgres://x" {
+			t.Fatalf("got %q err %v, want postgres://x nil", got, err)
+		}
+	})
+	t.Run("missing errors", func(t *testing.T) {
+		t.Setenv("DATABASE_URL", "")
+		if _, err := DatabaseURL(); err == nil {
+			t.Fatal("expected error for missing DATABASE_URL")
 		}
 	})
 }

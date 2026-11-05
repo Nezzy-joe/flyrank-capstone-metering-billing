@@ -33,6 +33,10 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Fail-fast: database.New pings before we start serving. An unreachable
+	// database at startup prevents the API from starting at all; a database that
+	// goes down *after* startup is reported by /ready (503), not a crash.
+	// See DESIGN.md "Startup & readiness policy".
 	pool, err := database.New(ctx, cfg)
 	if err != nil {
 		return err
