@@ -38,60 +38,81 @@ func DatabaseURL() (string, error) {
 	return url, nil
 }
 
+// Sane upper bounds. They keep the service configured within reason AND prevent
+// overflow when casting to int32 (pool sizes) or multiplying into a time.Duration
+// (minutes/seconds -> nanoseconds). All are well within those type ranges.
+const (
+	maxPoolConns      = 10000  // int32-safe
+	maxDurationUnits  = 525600 // minutes in a year; *time.Minute stays int64-safe
+	maxShutdownSecond = 86400  // one day
+)
+
 // Load reads configuration from the environment, applies defaults, and validates.
-// A malformed integer value is a hard error (it is never silently defaulted).
+// A malformed integer value is a hard error (it is never silently defaulted), and
+// every integer is range-checked before it is cast, so no cast can overflow.
 func Load() (*Config, error) {
 	l := &envLoader{}
-	cfg := &Config{
-		DatabaseURL:       os.Getenv("DATABASE_URL"),
-		Port:              l.str("PORT", "8080"),
-		AppEnv:            l.str("APP_ENV", "development"),
-		DBMaxConns:        int32(l.intVal("DB_MAX_CONNS", 10)),
-		DBMinConns:        int32(l.intVal("DB_MIN_CONNS", 0)),
-		DBMaxConnLifetime: time.Duration(l.intVal("DB_MAX_CONN_LIFETIME_MINUTES", 60)) * time.Minute,
-		DBMaxConnIdleTime: time.Duration(l.intVal("DB_MAX_CONN_IDLE_MINUTES", 30)) * time.Minute,
-		ShutdownTimeout:   time.Duration(l.intVal("SHUTDOWN_TIMEOUT_SECONDS", 10)) * time.Second,
-	}
+	databaseURL := os.Getenv("DATABASE_URL")
+	port := l.str("PORT", "8080")
+	appEnv := l.str("APP_ENV", "development")
+	maxConns := l.intVal("DB_MAX_CONNS", 10)
+	minConns := l.intVal("DB_MIN_CONNS", 0)
+	lifetimeMin := l.intVal("DB_MAX_CONN_LIFETIME_MINUTES", 60)
+	idleMin := l.intVal("DB_MAX_CONN_IDLE_MINUTES", 30)
+	shutdownSec := l.intVal("SHUTDOWN_TIMEOUT_SECONDS", 10)
 	if l.err != nil {
 		return nil, l.err
 	}
-	if err := cfg.validate(); err != nil {
+
+	// Range-check raw ints BEFORE any int32/Duration conversion.
+	if databaseURL == "" {
+		return nil, fmt.Errorf("config: DATABASE_URL is required")
+	}
+	if err := checkPort(port); err != nil {
 		return nil, err
 	}
-	return cfg, nil
+	if err := checkRange("DB_MAX_CONNS", maxConns, 1, maxPoolConns); err != nil {
+		return nil, err
+	}
+	if err := checkRange("DB_MIN_CONNS", minConns, 0, maxConns); err != nil {
+		return nil, err
+	}
+	if err := checkRange("DB_MAX_CONN_LIFETIME_MINUTES", lifetimeMin, 1, maxDurationUnits); err != nil {
+		return nil, err
+	}
+	if err := checkRange("DB_MAX_CONN_IDLE_MINUTES", idleMin, 1, maxDurationUnits); err != nil {
+		return nil, err
+	}
+	if err := checkRange("SHUTDOWN_TIMEOUT_SECONDS", shutdownSec, 1, maxShutdownSecond); err != nil {
+		return nil, err
+	}
+
+	return &Config{
+		DatabaseURL:       databaseURL,
+		Port:              port,
+		AppEnv:            appEnv,
+		DBMaxConns:        int32(maxConns),
+		DBMinConns:        int32(minConns),
+		DBMaxConnLifetime: time.Duration(lifetimeMin) * time.Minute,
+		DBMaxConnIdleTime: time.Duration(idleMin) * time.Minute,
+		ShutdownTimeout:   time.Duration(shutdownSec) * time.Second,
+	}, nil
 }
 
-func (c *Config) validate() error {
-	if c.DatabaseURL == "" {
-		return fmt.Errorf("config: DATABASE_URL is required")
-	}
-
-	port, err := strconv.Atoi(c.Port)
+func checkPort(port string) error {
+	n, err := strconv.Atoi(port)
 	if err != nil {
-		return fmt.Errorf("config: PORT must be an integer, got %q", c.Port)
+		return fmt.Errorf("config: PORT must be an integer, got %q", port)
 	}
-	if port < 1 || port > 65535 {
-		return fmt.Errorf("config: PORT must be between 1 and 65535, got %d", port)
+	if n < 1 || n > 65535 {
+		return fmt.Errorf("config: PORT must be between 1 and 65535, got %d", n)
 	}
+	return nil
+}
 
-	if c.DBMaxConns <= 0 {
-		return fmt.Errorf("config: DB_MAX_CONNS must be > 0, got %d", c.DBMaxConns)
-	}
-	if c.DBMinConns < 0 {
-		return fmt.Errorf("config: DB_MIN_CONNS must be >= 0, got %d", c.DBMinConns)
-	}
-	if c.DBMinConns > c.DBMaxConns {
-		return fmt.Errorf("config: DB_MIN_CONNS (%d) must not exceed DB_MAX_CONNS (%d)", c.DBMinConns, c.DBMaxConns)
-	}
-
-	if c.DBMaxConnLifetime <= 0 {
-		return fmt.Errorf("config: DB_MAX_CONN_LIFETIME_MINUTES must be > 0")
-	}
-	if c.DBMaxConnIdleTime <= 0 {
-		return fmt.Errorf("config: DB_MAX_CONN_IDLE_MINUTES must be > 0")
-	}
-	if c.ShutdownTimeout <= 0 {
-		return fmt.Errorf("config: SHUTDOWN_TIMEOUT_SECONDS must be > 0")
+func checkRange(name string, v, lo, hi int) error {
+	if v < lo || v > hi {
+		return fmt.Errorf("config: %s must be between %d and %d, got %d", name, lo, hi, v)
 	}
 	return nil
 }

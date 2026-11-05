@@ -53,6 +53,8 @@ func TestLoad_Invalid(t *testing.T) {
 		{"DB_MAX_CONNS not positive", map[string]string{"DATABASE_URL": "postgres://x", "DB_MAX_CONNS": "0"}},
 		{"DB_MIN_CONNS negative", map[string]string{"DATABASE_URL": "postgres://x", "DB_MIN_CONNS": "-1"}},
 		{"DB_MIN_CONNS exceeds max", map[string]string{"DATABASE_URL": "postgres://x", "DB_MAX_CONNS": "5", "DB_MIN_CONNS": "9"}},
+		{"DB_MAX_CONNS overflow (int32)", map[string]string{"DATABASE_URL": "postgres://x", "DB_MAX_CONNS": "99999999999"}},
+		{"lifetime overflow", map[string]string{"DATABASE_URL": "postgres://x", "DB_MAX_CONN_LIFETIME_MINUTES": "999999999"}},
 		{"non-positive lifetime", map[string]string{"DATABASE_URL": "postgres://x", "DB_MAX_CONN_LIFETIME_MINUTES": "0"}},
 		{"non-positive idle", map[string]string{"DATABASE_URL": "postgres://x", "DB_MAX_CONN_IDLE_MINUTES": "0"}},
 		{"non-positive shutdown", map[string]string{"DATABASE_URL": "postgres://x", "SHUTDOWN_TIMEOUT_SECONDS": "0"}},
