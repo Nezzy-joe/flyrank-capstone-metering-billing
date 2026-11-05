@@ -18,6 +18,8 @@ type Deps struct {
 	Resolver TenantResolver
 	Meter    Meterer
 	Usage    UsageReporter
+	Checkout Checkouter       // may be nil if Stripe checkout is not configured
+	Webhook  WebhookProcessor // may be nil if Stripe webhooks are not configured
 	Logger   *slog.Logger
 }
 
@@ -34,6 +36,10 @@ func NewServer(cfg *config.Config, d Deps) *http.Server {
 	authed := authMiddleware(d.Resolver, d.Logger)
 	mux.Handle("POST /v1/generate", authed(handleGenerate(d.Meter, d.Logger)))
 	mux.Handle("GET /v1/usage", authed(handleUsage(d.Usage, d.Logger)))
+	mux.Handle("POST /v1/checkout", authed(handleCheckout(d.Checkout, d.Logger)))
+
+	// Stripe calls this directly: no tenant auth; the signature is the auth.
+	mux.Handle("POST /webhooks/stripe", handleWebhook(d.Webhook, d.Logger))
 
 	return &http.Server{
 		Addr:              ":" + cfg.Port,

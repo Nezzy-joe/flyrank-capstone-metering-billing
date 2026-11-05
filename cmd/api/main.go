@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/Nezzy-joe/flyrank-capstone-metering-billing/internal/billing"
 	"github.com/Nezzy-joe/flyrank-capstone-metering-billing/internal/config"
 	"github.com/Nezzy-joe/flyrank-capstone-metering-billing/internal/database"
 	"github.com/Nezzy-joe/flyrank-capstone-metering-billing/internal/httpapi"
@@ -47,11 +48,26 @@ func run(logger *slog.Logger) error {
 	defer pool.Close()
 	logger.Info("database pool ready", "max_conns", cfg.DBMaxConns)
 
+	// Stripe features are optional; nil deps make their endpoints return 503.
+	var checkout httpapi.Checkouter
+	var webhookProc httpapi.WebhookProcessor
+	if cfg.StripeCheckoutEnabled() {
+		gw := billing.NewStripeGateway(cfg.StripeSecretKey, cfg.StripeProPriceID)
+		checkout = billing.NewCheckoutService(gw, cfg.PublicBaseURL)
+		logger.Info("stripe checkout enabled")
+	}
+	if cfg.StripeWebhookEnabled() {
+		webhookProc = billing.NewWebhookService(pool, cfg.StripeWebhookSecret, cfg.StripeProPriceID, logger)
+		logger.Info("stripe webhooks enabled")
+	}
+
 	srv := httpapi.NewServer(cfg, httpapi.Deps{
 		Pinger:   pool,
 		Resolver: service.NewAuthService(pool),
 		Meter:    service.NewMeterService(pool, logger),
 		Usage:    service.NewUsageService(pool),
+		Checkout: checkout,
+		Webhook:  webhookProc,
 		Logger:   logger,
 	})
 
