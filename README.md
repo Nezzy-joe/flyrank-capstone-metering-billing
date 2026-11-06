@@ -1,5 +1,9 @@
 # Usage Metering & Billing Engine
 
+[![CI](https://github.com/Nezzy-joe/flyrank-capstone-metering-billing/actions/workflows/ci.yml/badge.svg)](https://github.com/Nezzy-joe/flyrank-capstone-metering-billing/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.25-00ADD8.svg)](go.mod)
+
 A backend service that answers the three questions every SaaS must: **how much has a customer used, what does it cost, and have they hit their plan limits?** It meters billable actions with exactly-once guarantees, enforces per-plan quotas with honest status codes, calculates cost under real AI-token pricing rules, and syncs subscriptions from Stripe (test mode) via signature-verified, idempotent webhooks.
 
 **Stack:** Go · PostgreSQL (pgx) · Docker Compose · Stripe test mode · golang-migrate
